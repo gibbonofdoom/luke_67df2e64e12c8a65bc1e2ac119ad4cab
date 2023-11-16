@@ -6,6 +6,9 @@ import maya.OpenMaya as om
 from maya import cmds, mel
 
 """
+
+see framefit_animrig_current_panel_to_selected() function at the bottom of the file
+
 # from Rigging.rAnimation import GetRig
     - I've not included our GetRig.get_all_rig_controls for this sample as your rigs
     - won't have the same embedded data that we use for this call to work
@@ -65,7 +68,12 @@ def get_bounds_of_anim_control_shapes(
     for i in range(len(shapes)):
         selection_list.getDagPath(i, selected_path)
 
-        curve = om.MFnNurbsCurve(selected_path)
+        try:
+            curve = om.MFnNurbsCurve(selected_path)
+        except RuntimeError as e:
+            # animation control shapes are expected to be a nurbs-curve, skip no biggy
+            continue
+
         point_list = om.MPointArray()
         curve.getCVs(point_list, om.MSpace.kWorld)
 
@@ -94,7 +102,7 @@ def get_centre_in_bounds(
 
 
 def framefit_animrig(
-        camera: str,
+        target_camera: str,
         targets: List[str],
         zoom_amount: float = 0.25
 ) -> None:
@@ -111,28 +119,35 @@ def framefit_animrig(
         Position the camera along the camera / bounds-centre vector * the zoom_amount
 
     Args:
-        camera: target camera
+        target_camera: target camera
         targets: items to focus on
         zoom_amount: increased zoom amount
 
     """
 
     # clean our target list to ensure they have a shape
-    targets = [
-        i for i in
-        cmds.ls(targets, type=['transform', 'shape'])
-        if cmds.listRelatives(i, shapes=True)
-    ]
+    # collect our shapes as we need to select that for cmds.viewFit to ignore children
+    shapes = []
+    targets_ = []
+    for i in targets:
+        s = cmds.listRelatives(i, shapes=True)
+        if not s:
+            continue
+        shapes.extend(s)
+        targets_.append(i)
 
-    cmds.select(targets)
+    if not targets_:
+        # if there's no target objects to frame, then there's nothing left to work out
+        return
+    else:
+        targets = targets_
+
+    cmds.select(shapes)
 
     # run an initial fitPanel to get an approximate zoom-level (sometimes)
     # and free camera orientation
-    mel.eval('fitPanel -selectedNoChildren;')
-
-    if not targets:
-        # if there's no target objects to frame, then there's nothing left to work out
-        return
+    # mel.eval('fitPanel -selectedNoChildren;')
+    cmds.viewFit(target_camera, allObjects=False, fitFactor=0.8)
 
     invisible = cmds.ls(invisible=True, dag=True)
 
@@ -160,7 +175,7 @@ def framefit_animrig(
         return
 
     # calculate our current camera vector to selected
-    camera_pos = numpy.array(cmds.xform(camera, q=True, ws=True, t=True))
+    camera_pos = numpy.array(cmds.xform(target_camera, q=True, ws=True, t=True))
     vector = centre_pos - camera_pos
 
     # maximum amount is "at the center pos"
@@ -168,29 +183,29 @@ def framefit_animrig(
     delta = max(0.0, min(zoom_amount, 1.0))
     moveto_pos = camera_pos + vector * delta
 
-    cmds.xform(camera, ws=True, t=list(moveto_pos))
+    cmds.xform(target_camera, ws=True, t=list(moveto_pos))
 
     # update our camera centre-of-interest for orbit
-    _coi_attr = f'{camera}.centerOfInterest'
+    _coi_attr = f'{target_camera}.centerOfInterest'
     cmds.setAttr(_coi_attr, int(cmds.getAttr(_coi_attr) * (1 - delta)))
 
 
 def framefit_animrig_current_panel_to_selected(
-        camera: Optional[str] = None
+        target_camera: Optional[str] = None
 ) -> None:
     """
     Frame Fit User-Command for selected objects for current active modelPanel
 
     Args:
-        camera: use this camera? if not, query current panel
+        target_camera: use this camera? if not, query current panel
 
     Returns:
 
     """
 
-    if not camera:
+    if not target_camera:
         try:
-            camera = cmds.modelEditor(
+            target_camera = cmds.modelEditor(
                 cmds.getPanel(wf=True),
                 q=True,
                 camera=True
@@ -198,7 +213,7 @@ def framefit_animrig_current_panel_to_selected(
         except RuntimeError as e:
             # this can fail if run from the script window, as that's not a valid thing with a camera
             # so fall-back to the default perspective
-            camera = 'persp'
+            target_camera = 'persp'
 
     # store current selection
     sel = cmds.ls(sl=True)
@@ -207,7 +222,7 @@ def framefit_animrig_current_panel_to_selected(
         cmds.undoInfo(openChunk=True)
 
         framefit_animrig(
-            camera,
+            target_camera,
             # cmds.ls(sl=True, type=['transform', 'joint']) or GetRig.get_all_rig_controls()
             cmds.ls(sl=True, type=['transform', 'joint']) or get_all_rig_controls(),
             zoom_amount=0.25  # todo: send this via a user-setting query for customisation?
